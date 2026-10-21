@@ -1,0 +1,86 @@
+# Gemma 4 E4B, our best configuration: 40.2% MFU on 4x B300 (67.3 s per step, 31,177 tokens/s/GPU), against 35.0% for
+# the earlier reference configuration (v0/) at the same batch. Every value is written out, so a new config can start
+# from this one (base: v1) and change only what differs. Measured with mock data; real data does the same work per step.
+#   GPU_IDS=4,5,6,7 bridge/models/gemma4/run.sh v1
+
+model_family: gemma4                  # bridge/models/gemma4: train.py (our patches), flops.py (MFU)
+model: google/gemma-4-E4B-it          # HF checkpoint: tokenizer, data and FLOP count
+recipe: gemma4_e4b_pretrain_config    # Megatron-Bridge's recipe: mixed_precision bf16_mixed (FP32 gradient reduce)
+data: fineweb-edu                     # tokenized by bridge/data/prepare.py; or mock
+
+# Run settings, for OOTB and ours alike
+tp: 1                                 # every GPU data-parallel: fastest for a 7.5B-parameter model
+pp: 1                                 # Gemma4DenseProvider supports PP 1 only
+mbs: 4                                # ours only: OOTB keeps the recipe's 1
+gbs: 2048                             # 128 micro-batches per GPU per step on 4 GPUs; null: 8 sequences per GPU
+seq_len: 4096
+train_iters: 30                       # a benchmark: MFU is the median of steps 21-30
+warmup_iters: 10
+
+# The recipe's values, written out: ConfigContainer fields for OOTB and ours alike. Change one and both runs change.
+shared:
+  rng.seed: 1234
+  train.manual_gc: true               # Python garbage collection on a schedule, not at random
+  train.manual_gc_interval: 100
+  train.manual_gc_eval: 100
+  optimizer.optimizer: adam
+  optimizer.lr: 3.0e-4
+  optimizer.min_lr: 3.0e-5
+  optimizer.weight_decay: 0.1
+  optimizer.adam_beta1: 0.9
+  optimizer.adam_beta2: 0.95
+  optimizer.adam_eps: 1.0e-8
+  optimizer.clip_grad: 1.0
+  optimizer.bf16: true
+  optimizer.use_distributed_optimizer: true
+  optimizer.use_precision_aware_optimizer: false
+  scheduler.lr_decay_style: cosine
+  scheduler.lr_warmup_init: 0.0
+  scheduler.lr_decay_iters: null      # null: train_iters
+  scheduler.start_weight_decay: 0.033
+  scheduler.end_weight_decay: 0.033
+  scheduler.weight_decay_incr_style: constant
+  ddp.use_distributed_optimizer: true # optimizer state split across the data-parallel GPUs
+  ddp.grad_reduce_in_fp32: true       # bf16_mixed forces it: gradients are accumulated and reduced in FP32
+  ddp.average_in_collective: true
+  ddp.gradient_reduce_div_fusion: true
+  ddp.bucket_size: null               # null: Megatron's default bucketing
+  model.context_parallel_size: 1
+  model.expert_model_parallel_size: 1
+  model.sequence_parallel: false      # only matters with TP > 1
+  model.attention_dropout: 0.0
+  model.hidden_dropout: 0.0
+  model.attention_softmax_in_fp32: false
+  model.cross_entropy_loss_fusion: true
+  model.cross_entropy_fusion_impl: native
+  model.masked_softmax_fusion: false  # the recipe's; the global layers' TE attention fuses its own softmax
+  model.bias_activation_fusion: false # Megatron's fused kernel doesn't cover Gemma's tanh-GeLU
+  model.bias_dropout_fusion: false    # no biases, no dropout
+  model.persist_layer_norm: false     # Gemma 4's RMSNorm is compiled by train.py instead
+  model.recompute_granularity: null   # no activation recompute
+  model.cpu_offloading: false
+  model.deterministic_mode: false
+  model.fp8: null                     # needs Transformer Engine layers, which Gemma 4's layer spec doesn't build
+  model.cuda_graph_impl: none         # the same
+  dataset.num_workers: 2
+
+# Our changes to the recipe: ours only
+overrides:
+  ddp.overlap_grad_reduce: true       # needs GEMMA4_FREEZE_UNUSED=1 below
+  ddp.overlap_param_gather: false     # measured 31 ms per step slower on NVLink
+  ddp.check_for_nan_in_grad: false
+  model.gradient_accumulation_fusion: true
+  model.apply_rope_fusion: true
+
+# ootb=true runs Megatron-Bridge's run_recipe.py instead of train.py, with only these changes. The recipe overlaps the
+# gradient reduce, which fails after the first step on Gemma 4 unless train.py freezes the unused k_layernorm weights.
+ootb_overrides:
+  ddp.overlap_grad_reduce: false
+
+# Variables for the container: train.py's patches, all on (its defaults, written out); 0 or local turns one off
+env:
+  GEMMA4_FAST_NORM: 1                 # torch.compile the RMSNorm and the value norm
+  GEMMA4_FAST_SOFTCAP: 1              # torch.compile the final-logit softcap
+  GEMMA4_SLIDING_ATTN: fa2            # the 35 sliding-window layers: FlashAttention 2
+  GEMMA4_GLOBAL_ATTN: te              # the 7 global layers: Transformer Engine's unfused attention
+  GEMMA4_FREEZE_UNUSED: 1             # freeze the 18 KV-shared layers' unused k_layernorm weights

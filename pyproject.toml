@@ -1,0 +1,4 @@
+[tool.black]
+line-length = 100
+skip-magic-trailing-comma = true
+extend-exclude = "bridge/(models/gemma4/v0|validate/scripts)/"

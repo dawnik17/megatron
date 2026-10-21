@@ -1,0 +1,12 @@
+# v1 on 80 GB A100s, on 6 or more GPUs: shorter sequences, micro-batch 2 and growable allocator segments fit in memory.
+base: v1
+mbs: 2
+gbs: null                             # 8 sequences per GPU: v1's 2048 doesn't divide 6 GPUs x micro-batch 2
+seq_len: 512
+train_iters: 100
+env:
+  PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+  # PROFILE: "nsys"
+  # STEPS:
+  #   - profiling.profile_step_start=30
+  #   - profiling.profile_step_end=32
