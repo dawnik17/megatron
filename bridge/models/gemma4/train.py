@@ -17,6 +17,9 @@ Patches (all on by default; set the variable to 0, or the attention ones to loca
   GEMMA4_FREEZE_UNUSED=1 freeze k_layernorm in the 18 KV-shared layers (their output is discarded,
                          so they never get a gradient); ddp.overlap_grad_reduce=true needs it
 
+Recipes in bridge/models/gemma4/<size>/recipe.py (e.g. 12B/recipe.py) are added to Megatron-Bridge's recipes, so
+--recipe finds them like a shipped one.
+
 Usage: same arguments as run_recipe.py (bridge/models/launch.py builds them from a config), e.g.
   python -m torch.distributed.run --nproc_per_node 4 bridge/models/gemma4/train.py \
       --recipe gemma4_e4b_pretrain_config --mode pretrain --dataset mock ...
@@ -150,7 +153,6 @@ def patch_attention(sliding: str, global_: str) -> None:
 
         if kind == "fa2":
             return fa2_attention(query, key, value, window, self.softmax_scale)
-
         module = te_modules.get(id(self))
         if module is None:
             module = te_modules[id(self)] = te_causal_attention(
@@ -186,6 +188,23 @@ def patch_freeze_unused_kv_norm() -> None:
     gemma4_provider.Gemma4DenseProvider.build = build
 
 
+def register_recipes() -> None:
+    """Add the recipes in bridge/models/gemma4/<size>/recipe.py (each module's __all__) to megatron.bridge.recipes,
+    where run_recipe.py's --recipe looks them up. Importing a recipe module also registers its bridge."""
+    import importlib
+    from pathlib import Path
+
+    import megatron.bridge.recipes as recipes
+
+    here = Path(__file__).resolve().parent
+    sys.path.insert(0, str(here.parents[2]))  # the repo root: bridge.models.gemma4.<size>.recipe
+    for path in sorted(here.glob("*/recipe.py")):
+        module = importlib.import_module(f"bridge.models.gemma4.{path.parent.name}.recipe")
+        for name in module.__all__:
+            setattr(recipes, name, getattr(module, name))
+            _log(f"recipe {name} from {path.relative_to(here)}")
+
+
 def main() -> None:
     torch._dynamo.config.cache_size_limit = max(torch._dynamo.config.cache_size_limit, 64)
 
@@ -208,6 +227,8 @@ def main() -> None:
 
     if _enabled("GEMMA4_FREEZE_UNUSED"):
         patch_freeze_unused_kv_norm()
+
+    register_recipes()
 
     bridge_root = os.environ.get("BRIDGE_ROOT", "/opt/Megatron-Bridge")
     run_recipe = os.path.join(bridge_root, "scripts", "training", "run_recipe.py")

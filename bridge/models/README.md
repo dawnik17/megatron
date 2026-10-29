@@ -10,7 +10,9 @@ models/
 └── gemma4/
     ├── config/v1.yaml     the best B300 configuration (40.2% MFU), every value written out
     ├── config/v2.yaml     v1 on 80 GB A100s: base: v1, plus what differs
-    ├── train.py           our runtime patches; then it runs Megatron-Bridge's run_recipe.py unchanged
+    ├── config/12b.yaml    Gemma 4 12B: base: v1, with our 12B recipe, on 4x 80 GB A100s
+    ├── 12B/               the 12B text tower: bridge.py (registers its HF architecture), recipe.py (our recipe)
+    ├── train.py           our runtime patches and our recipes; then it runs Megatron-Bridge's run_recipe.py unchanged
     ├── flops.py           forward FLOPs per token for MFU, from the model's HF config
     ├── run.sh             the standalone launcher: settings from environment variables, no config
     └── v0/                the reference run the optimizations started from
@@ -72,3 +74,22 @@ Its settings are `TP`, `MBS` (4), `GBS` (8 per GPU), `SEQ_LEN` (4096), `TRAIN_IT
 
 A folder `models/<family>/` with a `train.py` that patches functions and then runs `run_recipe.py` (as
 `gemma4/train.py` does), a `flops.py` with `forward_flops_per_token(hf_text_config, seq_len)`, and its `config/`.
+
+## A recipe of our own
+
+`run_recipe.py --recipe NAME` only looks in Megatron-Bridge's `megatron.bridge.recipes`. `gemma4/train.py` adds every
+function in the `__all__` of `gemma4/<size>/recipe.py` there before it starts `run_recipe.py`, so a config's
+`recipe:` can name one (`12B/recipe.py`'s `gemma4_12b_pretrain_h200_bf16_config`). `ootb=true` runs `run_recipe.py`
+alone and can't find it. To check a recipe without training, run `train.py` with `--dry-run`: it builds the recipe,
+applies the overrides and writes the resulting ConfigContainer:
+
+```bash
+enroot start -e NVIDIA_VISIBLE_DEVICES=7 -e HOME=/tmp -e HF_HOME=/repo/.cache/hf -e HF_HUB_OFFLINE=1 \
+  -e PYTHONPATH=/opt/Megatron-Bridge/src:/opt/Megatron-Bridge/3rdparty/Megatron-LM \
+  -m $PWD:/repo -m /tmp:/out pyxis_nemo-26-08 python /repo/bridge/models/gemma4/train.py \
+  --recipe gemma4_12b_pretrain_h200_bf16_config --mode pretrain --dataset mock tokenizer.vocab_size=262144 -tp 4 \
+  --dry-run logger.save_config_filepath=/out/ConfigContainer.yaml
+```
+
+Then a few steps on GPUs: `GPU_IDS=2,5,6,7 python3 bridge/models/launch.py bridge/models/gemma4/config/12b.yaml smoke
+train_iters=10`.

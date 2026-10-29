@@ -5,11 +5,12 @@ Runs in the NeMo container, from the repo root (it needs the network once, for t
 the repo at /repo, wherever it is on the host.
   enroot start -e HOME=/tmp -e HF_HOME=/repo/.cache/hf -e NVIDIA_VISIBLE_DEVICES=none \
     -e PYTHONPATH=/opt/Megatron-Bridge/src:/opt/Megatron-Bridge/3rdparty/Megatron-LM \
-    -m "$PWD:/repo" pyxis_nemo-26-08 python /repo/bridge/data/prepare.py
+    -m "$PWD:/repo" pyxis_nemo-26-08 python /repo/bridge/data/prepare.py [--tokenizer google/gemma-4-12B]
 
 The shard is pinned to a Hub revision and every document becomes <bos> text <eos>, so the output is the same on every
 machine: 726,000 documents, 745,470,669 tokens with Gemma 4's tokenizer, in
-.cache/data/fineweb-edu/google--gemma-4-E4B-it/fineweb-edu_text_document.{bin,idx}.
+.cache/data/fineweb-edu/<tokenizer>/fineweb-edu_text_document.{bin,idx} (<tokenizer>: google--gemma-4-E4B-it by
+default), the folder launch.py reads for a config whose model is that tokenizer.
 """
 
 import argparse
@@ -34,10 +35,11 @@ def main():
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    p.add_argument(
-        "--out", type=Path, default=REPO / ".cache/data/fineweb-edu" / TOKENIZER.replace("/", "--")
-    )
-    out = p.parse_args().out
+    p.add_argument("--tokenizer", default=TOKENIZER, help="HF tokenizer (the model's)")
+    p.add_argument("--out", type=Path, help="default: .cache/data/fineweb-edu/<tokenizer>")
+    args = p.parse_args()
+    tokenizer = args.tokenizer
+    out = args.out or REPO / ".cache/data/fineweb-edu" / tokenizer.replace("/", "--")
     out.mkdir(parents=True, exist_ok=True)
 
     import pyarrow.parquet as pq
@@ -45,8 +47,10 @@ def main():
     from megatron.core.datasets.indexed_dataset import IndexedDataset
     from transformers import AutoTokenizer
 
-    # preprocess_data.py appends EOD but adds no BOS; the tokenizer turns the literal BOS token at the start into its id.
-    bos = AutoTokenizer.from_pretrained(TOKENIZER).bos_token
+    # preprocess_data.py appends EOD. E4B-it's tokenizer adds no BOS, so the text starts with the literal BOS token,
+    # which it turns into its id; 12B's adds BOS itself, and a literal one would make two.
+    tok = AutoTokenizer.from_pretrained(tokenizer)
+    bos = "" if tok("x").input_ids[0] == tok.bos_token_id else tok.bos_token
     jsonl = out / "documents.jsonl"
 
     with open(jsonl, "w") as f:
@@ -71,7 +75,7 @@ def main():
             "--tokenizer-type",
             "HuggingFaceTokenizer",
             "--tokenizer-model",
-            TOKENIZER,
+            tokenizer,
             "--append-eod",
             "--workers",
             str(min(64, os.cpu_count())),
@@ -84,7 +88,7 @@ def main():
     manifest = dict(
         SOURCE,
         name="fineweb-edu",
-        tokenizer=TOKENIZER,
+        tokenizer=tokenizer,
         bos=True,
         eod=True,
         documents=len(tokenized),

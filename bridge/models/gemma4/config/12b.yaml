@@ -1,0 +1,13 @@
+# Gemma 4 12B: v1's settings and patches on the 12B text tower, with our recipe (bridge/models/gemma4/12B/recipe.py,
+# which train.py adds to Megatron-Bridge's recipes; ootb=true doesn't work, run_recipe.py alone can't find it).
+# Sized for 4x 80 GB A100s; on 141 GB H200s, tp: 2 fits as well.
+#   GPU_IDS=2,5,6,7 python3 bridge/models/launch.py bridge/models/gemma4/config/12b.yaml
+base: v1
+model: google/gemma-4-12B-it             # Gemma4UnifiedForConditionalGeneration: 12B/bridge.py maps its text tower;
+                                      # fineweb-edu tokenized with its tokenizer: prepare.py --tokenizer google/gemma-4-12B
+recipe: gemma4_12b_pretrain_h200_bf16_config
+tp: 4                                 # bf16 weights + FP32 grads + Adam: 18 bytes/param, ~54 GB/GPU at TP 4, DP 1
+mbs: 1                                # peaks at 79.4 GB reserved of 80 at seq 4096: no room for mbs 2 on A100s
+gbs: null                             # 8 sequences per data-parallel rank
+env:
+  PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
